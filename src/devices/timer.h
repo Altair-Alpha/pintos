@@ -2,6 +2,7 @@
 #define DEVICES_TIMER_H
 
 #include <round.h>
+#include <list.h>
 #include <stdint.h>
 
 /** Number of timer interrupts per second. */

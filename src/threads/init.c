@@ -134,6 +134,45 @@ pintos_init (void)
     run_actions (argv);
   } else {
     // TODO: no command line passed to kernel. Run interactively 
+    size_t cmd_maxlen = 10;
+    char *buf = (char *)malloc(cmd_maxlen); // command line input buffer
+    while (true) {
+      printf("PKUOS>");
+      memset(buf, '\0', cmd_maxlen);
+      size_t index = 0;
+      while (1) {
+        char c = input_getc();
+        if (c == 13) { // newline
+          printf("\n");
+          break;
+        } else if (c == 127) { // backspace
+          if (index > 0) {
+            buf[--index] = '\0';
+            printf("\b \b");
+          }
+          continue;
+        }
+        if (index >= cmd_maxlen) {
+          continue;
+        }
+        buf[index++] = c;
+        if (c > 31) { // printable characters
+          printf("%c", c);
+        }
+      }
+      printf("sleeping...\n");
+      timer_msleep(2000);
+      printf("cmd: %s\n", buf);
+      if (!strcmp(buf, "whoami")) {
+        printf("123456789\n");
+      } else if (!strcmp(buf, "exit")) {
+        break;
+      } else {
+        printf("invalid command\n");
+      }
+    }
+    free(buf);
+    printf("shell terminated.\n");
   }
 
   /* Finish up. */
