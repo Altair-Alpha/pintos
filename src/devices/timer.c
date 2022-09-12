@@ -128,9 +128,9 @@ sleep_tick(void)
     if (--(entry->sleep_ticks) <= 0) {
       e = list_remove(e);
       thread_unblock(entry->t);
-      // if (entry->t->priority > thread_current()->priority) {
-        // intr_yield_on_return();
-      // }
+      if (entry->t->priority > thread_current()->priority) {
+        intr_yield_on_return();
+      }
     } else {
       e = list_next(e);
     }

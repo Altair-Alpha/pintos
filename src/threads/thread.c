@@ -29,6 +29,9 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+/** Flags that indicate scheduling is ready to go. Set to true in thread_start(). */
+static bool schedule_started;
+
 /** Idle thread. */
 static struct thread *idle_thread;
 
@@ -124,6 +127,8 @@ thread_start (void)
 
   /* Wait for the idle thread to initialize idle_thread. */
   sema_down (&idle_started);
+
+  schedule_started = true;
 }
 
 /** Called by the timer interrupt handler at each timer tick.
@@ -272,10 +277,6 @@ thread_unblock (struct thread *t)
   //list_push_back (&ready_list, &t->elem);
   list_insert_ordered(&ready_list, &t->elem, thread_priority_greater, NULL);
   t->status = THREAD_READY;
-  if (t->priority > thread_current()->priority) {
-    // intr_yield_on_return();
-    // thread_yield();
-  }
   intr_set_level (old_level);
 }
 
@@ -338,6 +339,10 @@ thread_exit (void)
 void
 thread_yield (void) 
 {
+  if (!schedule_started) {
+    return;
+  }
+  
   struct thread *cur = thread_current ();
   enum intr_level old_level;
   
