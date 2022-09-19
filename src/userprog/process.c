@@ -26,45 +26,130 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *proc_cmd) 
 {
-  char *fn_copy;
+  char *proc_cmd_copy1, *proc_cmd_copy2;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
+  /* Make two copies of PROC_CMD (one for proc_name and one for start_process).
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+  proc_cmd_copy1 = palloc_get_page(0);
+  proc_cmd_copy2 = palloc_get_page(0);
+  if (proc_cmd_copy1 == NULL || proc_cmd_copy2 == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  
+  strlcpy (proc_cmd_copy1, proc_cmd, PGSIZE);
+  strlcpy (proc_cmd_copy2, proc_cmd, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  char *save_ptr;
+  char *proc_name = strtok_r(proc_cmd_copy1, " ", &save_ptr);
+  
+  /* Create a new thread to execute PROC_CMD. */
+  tid = thread_create (proc_name, PRI_DEFAULT, start_process, proc_cmd_copy2);
+
+  if (tid == TID_ERROR) {
+    palloc_free_page(proc_cmd_copy1);
+    palloc_free_page(proc_cmd_copy2);
+  }
   return tid;
 }
-
+static void
+push_argument (void **esp, int argc, int argv[]){
+  *esp = (int)*esp & 0xfffffffc;
+  *esp -= 4;
+  *(int *) *esp = 0;
+  for (int i = argc - 1; i >= 0; i--)
+  {
+    *esp -= 4;
+    *(int *) *esp = argv[i];
+  }
+  *esp -= 4;
+  *(int *) *esp = (int) *esp + 4;
+  *esp -= 4;
+  *(int *) *esp = argc;
+  *esp -= 4;
+  *(int *) *esp = 0;
+}
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *proc_cmd_)
 {
-  char *file_name = file_name_;
+  char *proc_cmd = proc_cmd_;
   struct intr_frame if_;
   bool success;
+
+  char *token, *save_ptr;
+  // it's ok to modify proc_cmd's content since we've passed a copy from process_execute
+  char *proc_name = strtok_r(proc_cmd, " ", &save_ptr);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (proc_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
+  
+  int argc = 0;
+  void* argv[128]; // assume we have at most 128 command line arguments
+  
+  
+  // while ((token = strtok_r (NULL, " ", &save_ptr)) != NULL) {
+  //   // printf("TOKEN %s LEN %d\n", token, strlen(token));
+  //   size_t arg_len = strlen(token) + 1; // '\0' ending is needed
+  //   if_.esp -= arg_len;
+  //   memcpy(if_.esp, token, arg_len);
+  //   argv[argc++] = (int)if_.esp;
+  // }
+  // push_argument(&if_.esp, argc, argv);
+
+
+  // IMPORTANT CODE BELOW. See Background - Argument Passing.
+
+  // STEP 1. Set the stack pointer at the beginning of user virtual address space, 
+  // which is 0xc0000000 (3 GB) in Pintos (See Appendix - Virtual Addresses)
+  if_.esp = PHYS_BASE;
+  
+  // STEP 2. Parse the arguments, place them at the top of the stack and record their address
+  while ((token = strtok_r (NULL, " ", &save_ptr)) != NULL) {
+    // printf("TOKEN %s LEN %d\n", token, strlen(token));
+    size_t arg_len = strlen(token) + 1; // '\0' ending is needed
+    if_.esp -= arg_len;
+    memcpy(if_.esp, token, arg_len);
+    argv[argc++] = if_.esp;
+  }
+
+  // STEP 3&4. Round the pointer down to a multiple of 4 first, then push the address of each string
+  // plus a null pointer sentinel on the stack, in right-to-left order.
+  if_.esp = (void *) (((uintptr_t)if_.esp + 3) & ~0x03); // round to 4
+  
+  size_t ptr_size = sizeof(void *); // size of a pointer
+  if_.esp -= ptr_size;
+  memset(if_.esp, 0, ptr_size); // null pointer sentinel
+  for (int i = argc-1; i >= 0; i--)
+  {
+    if_.esp -= ptr_size;
+    memcpy(if_.esp, &argv[i], ptr_size);
+  }
+
+  // STEP 5. Push argv (the address of argv[0]) and argc, in that order.
+  if_.esp -= ptr_size;
+  *(uintptr_t *)if_.esp = (void *) ((uintptr_t)if_.esp + ptr_size); // argv[0] is at where we just were
+  if_.esp -= ptr_size;
+  *(int *)if_.esp = argc;
+
+  // STEP 6. Push a fake "return address"(0).
+  if_.esp -= ptr_size;
+  memset(if_.esp, 0, ptr_size);
+
+  // printf("STACK SET. ESP: %p\n", if_.esp);
+  // hex_dump((uintptr_t)if_.esp, if_.esp, 100, true);
+     
+  palloc_free_page(proc_cmd);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -96,6 +181,9 @@ void
 process_exit (void)
 {
   struct thread *cur = thread_current ();
+
+  printf("%s: exit(%d)\n", cur->name, cur->exit_code);
+
   uint32_t *pd;
 
   /* Destroy the current process's page directory and switch back

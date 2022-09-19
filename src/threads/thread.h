@@ -86,6 +86,7 @@ struct thread
   /* Owned by thread.c. */
   tid_t tid;                          /**< Thread identifier. */
   enum thread_status status;          /**< Thread state. */
+  int exit_code;                      /**< Thread exit code. */
   char name[16];                      /**< Name (for debugging purposes). */
   uint8_t *stack;                     /**< Saved stack pointer. */
   int priority;                       /**< Priority. This can be larger than the base
