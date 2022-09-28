@@ -3,7 +3,9 @@
 
 #include <debug.h>
 #include <list.h>
+#include <hash.h>
 #include <stdint.h>
+#include "threads/synch.h"
 #include "threads/fixed-point.h"
 
 /** States in a thread's life cycle. */
@@ -24,6 +26,8 @@ typedef int tid_t;
 #define PRI_MIN 0                       /**< Lowest priority. */
 #define PRI_DEFAULT 31                  /**< Default priority. */
 #define PRI_MAX 63                      /**< Highest priority. */
+
+struct child_entry;
 
 /** A kernel thread or user process.
 
@@ -110,17 +114,39 @@ struct thread
   uint32_t *pagedir;                  /**< Page directory. */
 #endif
 
+  struct thread *parent;             /**< Thread's parent. */
+  // struct list child_map;             /**< Thread's children (key=tid, value=child_entry). */
+  struct list child_list;            /**< Thread's children. */
+  struct child_entry *as_child;      /**< Thread itself's child_entry. This will be added 
+                                           to its parent's child_list and is heap-allocated 
+                                           so that it lives after the thread dies. */
+  
+  struct semaphore sema_exec;        /**< Semaphore for executing (spawning) a new process. 
+                                          "UPed" after knowing whether the child has loaded 
+                                          its executable successfully. */
+  bool exec_success;                  /**< Whether new process successfully loaded its executable. */
+   
+
   /* Owned by thread.c. */
   unsigned magic;                     /**< Detects stack overflow. */
+};
+
+/** Information of a thread's child */
+struct child_entry
+{
+  tid_t tid;                      /**< Child's tid. */
+  struct thread *t;               /**< Child itself. */
+  bool is_alive;                   /**< Whether the child is still running. */
+  int exit_code;                  /**< Child's exit code. */
+  bool is_waiting;                 /**< Whether the parent is waiting on the child. */
+  struct semaphore wait_sema;     /**< Semaphore to let parent wait on the child. */
+  struct list_elem elem;
 };
 
 /** If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
-
-bool thread_priority_greater(const struct list_elem *lhs,
-                             const struct list_elem* rhs, void *aux UNUSED);
 
 void thread_init (void);
 void thread_start (void);
@@ -152,5 +178,15 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+bool thread_priority_greater(const struct list_elem *,
+                             const struct list_elem *, void *);
+// unsigned thread_hash_func(const struct hash_elem *e, void *aux);
+// bool thread_hash_less(const struct hash_elem *lhs,
+//                       const struct hash_elem *rhs, void *aux UNUSED);
+
+// struct thread *get_thread_by_tid(tid_t tid);
+
+int thread_dead(tid_t tid);
 
 #endif /**< threads/thread.h */

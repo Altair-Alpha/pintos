@@ -16,6 +16,7 @@
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
+#include "threads/synch.h"
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
@@ -46,41 +47,35 @@ process_execute (const char *proc_cmd)
   
   /* Create a new thread to execute PROC_CMD. */
   tid = thread_create (proc_name, PRI_DEFAULT, start_process, proc_cmd_copy2);
-
   if (tid == TID_ERROR) {
     palloc_free_page(proc_cmd_copy1);
-    palloc_free_page(proc_cmd_copy2);
+    return TID_ERROR;
   }
+
+  sema_down(&thread_current()->sema_exec);
+
+  if (!thread_current()->exec_success) return -1;
+  thread_current()->exec_success = false; // reset the flag
+
   return tid;
 }
-static void
-push_argument (void **esp, int argc, int argv[]){
-  *esp = (int)*esp & 0xfffffffc;
-  *esp -= 4;
-  *(int *) *esp = 0;
-  for (int i = argc - 1; i >= 0; i--)
-  {
-    *esp -= 4;
-    *(int *) *esp = argv[i];
-  }
-  *esp -= 4;
-  *(int *) *esp = (int) *esp + 4;
-  *esp -= 4;
-  *(int *) *esp = argc;
-  *esp -= 4;
-  *(int *) *esp = 0;
-}
+
 /** A thread function that loads a user process and starts it
    running. */
 static void
 start_process (void *proc_cmd_)
 {
   char *proc_cmd = proc_cmd_;
+  // we can modify proc_cmd since we've passed a copy from process_execute
+  // but we need another copy: one for file name, one for arguments (including file name)
+  char *proc_cmd_copy = palloc_get_page(0);
+  strlcpy(proc_cmd_copy, proc_cmd, PGSIZE);
+
   struct intr_frame if_;
   bool success;
 
   char *token, *save_ptr;
-  // it's ok to modify proc_cmd's content since we've passed a copy from process_execute
+  
   char *proc_name = strtok_r(proc_cmd, " ", &save_ptr);
 
   /* Initialize interrupt frame and load executable. */
@@ -91,22 +86,15 @@ start_process (void *proc_cmd_)
   success = load (proc_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  if (!success) 
+  if (!success) {
+    thread_current()->as_child->is_alive = false;
+    thread_current()->exit_code = -1;
+    sema_up(&thread_current()->parent->sema_exec);
     thread_exit ();
+  }
   
   int argc = 0;
   void* argv[128]; // assume we have at most 128 command line arguments
-  
-  
-  // while ((token = strtok_r (NULL, " ", &save_ptr)) != NULL) {
-  //   // printf("TOKEN %s LEN %d\n", token, strlen(token));
-  //   size_t arg_len = strlen(token) + 1; // '\0' ending is needed
-  //   if_.esp -= arg_len;
-  //   memcpy(if_.esp, token, arg_len);
-  //   argv[argc++] = (int)if_.esp;
-  // }
-  // push_argument(&if_.esp, argc, argv);
-
 
   // IMPORTANT CODE BELOW. See Background - Argument Passing.
 
@@ -115,8 +103,8 @@ start_process (void *proc_cmd_)
   if_.esp = PHYS_BASE;
   
   // STEP 2. Parse the arguments, place them at the top of the stack and record their address
-  while ((token = strtok_r (NULL, " ", &save_ptr)) != NULL) {
-    // printf("TOKEN %s LEN %d\n", token, strlen(token));
+  for (token = strtok_r (proc_cmd_copy, " ", &save_ptr); token != NULL; token = strtok_r (NULL, " ", &save_ptr)) {
+    // printf("TOKEN %s LEN %d", token, strlen(token));
     size_t arg_len = strlen(token) + 1; // '\0' ending is needed
     if_.esp -= arg_len;
     memcpy(if_.esp, token, arg_len);
@@ -125,7 +113,12 @@ start_process (void *proc_cmd_)
 
   // STEP 3&4. Round the pointer down to a multiple of 4 first, then push the address of each string
   // plus a null pointer sentinel on the stack, in right-to-left order.
-  if_.esp = (void *) (((uintptr_t)if_.esp + 3) & ~0x03); // round to 4
+  // printf("BEFORE ROUND %p\n", if_.esp);
+  uintptr_t tmp = (uintptr_t)if_.esp; // pointer can't do modulo directly
+  if (tmp % 4 != 0)
+    tmp -= tmp % 4;
+  if_.esp = (void *)tmp;
+  // printf("AFTER ROUND %p\n", if_.esp);
   
   size_t ptr_size = sizeof(void *); // size of a pointer
   if_.esp -= ptr_size;
@@ -138,7 +131,7 @@ start_process (void *proc_cmd_)
 
   // STEP 5. Push argv (the address of argv[0]) and argc, in that order.
   if_.esp -= ptr_size;
-  *(uintptr_t *)if_.esp = (void *) ((uintptr_t)if_.esp + ptr_size); // argv[0] is at where we just were
+  *(uintptr_t *)if_.esp = ((uintptr_t)if_.esp + ptr_size); // argv[0] is at where we just were
   if_.esp -= ptr_size;
   *(int *)if_.esp = argc;
 
@@ -150,6 +143,10 @@ start_process (void *proc_cmd_)
   // hex_dump((uintptr_t)if_.esp, if_.esp, 100, true);
      
   palloc_free_page(proc_cmd);
+  palloc_free_page(proc_cmd_copy);
+
+  thread_current()->parent->exec_success = 1;
+  sema_up(&thread_current()->parent->sema_exec);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -171,8 +168,63 @@ start_process (void *proc_cmd_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
+  struct thread *t_cur = thread_current();
+  
+  // struct child_entry tmp;
+  // tmp.tid = child_tid;
+  // struct hash_elem *e = hash_find(&t_cur->child_map, &tmp.elem);
+
+  // if (e != NULL) {
+  //   struct child_entry *entry = hash_entry(e, struct child_entry, elem);
+  //   if (!entry->is_waiting) {
+  //     entry->is_waiting = 1;
+  //     sema_down(&entry->wait_sema); // wait for child process to exit
+  //     entry->is_waiting = 0;
+  //     printf("CHILD %s COMPLETE\n", entry->t->name);
+  //     return entry->exit_code;
+  //   }
+  //   else { // already waiting on child
+  //     return -1;
+  //   }
+  // } else {
+  //   printf("TID %d is not child of %s\n", child_tid, t_cur->name);
+  //   return -1;
+  // }
+  struct list_elem *e;
+  for (e = list_begin (&t_cur->child_list); e != list_end (&t_cur->child_list);
+       e = list_next (e))
+  {
+    struct child_entry *entry = list_entry(e, struct child_entry, elem);
+    if (entry->tid == child_tid) {
+      if (!entry->is_waiting && entry->is_alive) {
+        entry->is_waiting = true;
+        sema_down(&entry->wait_sema); // wait for child process to exit
+        entry->is_waiting = false;
+        // printf("CHILD %s COMPLETE\n", entry->t->name);
+        return entry->exit_code;
+      }
+      else { // already waiting on child or child has terminated
+        return -1;
+      }
+    }
+  }
+  // child_tid is not a child of current process
+  return -1;
+  
+  while (1)
+  {
+    thread_yield();
+    // struct thread *child = get_thread_by_tid(child_tid);
+    // if (child == NULL) printf("CHILD DEAD\n");
+    // else printf("CHILD %s STAT: %d\n", child->name, child->status);
+    if (thread_dead(child_tid)) break;
+    // if (thread_ready_count() == 0) {
+    //   printf("BREAK\n");
+    //   break;
+    // }
+  }
   return -1;
 }
 
