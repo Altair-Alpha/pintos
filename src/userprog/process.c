@@ -47,14 +47,18 @@ process_execute (const char *proc_cmd)
   
   /* Create a new thread to execute PROC_CMD. */
   tid = thread_create (proc_name, PRI_DEFAULT, start_process, proc_cmd_copy2);
+
+  palloc_free_page(proc_cmd_copy1);
+
   if (tid == TID_ERROR) {
-    palloc_free_page(proc_cmd_copy1);
     return TID_ERROR;
   }
 
   sema_down(&thread_current()->sema_exec);
 
-  if (!thread_current()->exec_success) return -1;
+  if (!thread_current()->exec_success) {
+    return -1;
+  }
   thread_current()->exec_success = false; // reset the flag
 
   return tid;
@@ -67,8 +71,16 @@ start_process (void *proc_cmd_)
 {
   char *proc_cmd = proc_cmd_;
   // we can modify proc_cmd since we've passed a copy from process_execute
-  // but we need another copy: one for file name, one for arguments (including file name)
+  // but again we need another copy: one for file name, one for arguments (including file name)
   char *proc_cmd_copy = palloc_get_page(0);
+  // if (proc_cmd_copy == NULL) {
+  //   palloc_free_page(proc_cmd);
+  //   thread_current()->as_child->is_alive = false;
+  //   thread_current()->exit_code = -1;
+  //   sema_up(&thread_current()->parent->sema_exec);
+  //   thread_exit ();
+  // }
+
   strlcpy(proc_cmd_copy, proc_cmd, PGSIZE);
 
   struct intr_frame if_;
@@ -83,10 +95,16 @@ start_process (void *proc_cmd_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+
+  lock_acquire(&filesys_lock);
   success = load (proc_name, &if_.eip, &if_.esp);
+  lock_release(&filesys_lock);
 
   /* If load failed, quit. */
   if (!success) {
+    palloc_free_page(proc_cmd);
+    palloc_free_page(proc_cmd_copy);
+
     thread_current()->as_child->is_alive = false;
     thread_current()->exit_code = -1;
     sema_up(&thread_current()->parent->sema_exec);
@@ -113,12 +131,10 @@ start_process (void *proc_cmd_)
 
   // STEP 3&4. Round the pointer down to a multiple of 4 first, then push the address of each string
   // plus a null pointer sentinel on the stack, in right-to-left order.
-  // printf("BEFORE ROUND %p\n", if_.esp);
   uintptr_t tmp = (uintptr_t)if_.esp; // pointer can't do modulo directly
   if (tmp % 4 != 0)
     tmp -= tmp % 4;
   if_.esp = (void *)tmp;
-  // printf("AFTER ROUND %p\n", if_.esp);
   
   size_t ptr_size = sizeof(void *); // size of a pointer
   if_.esp -= ptr_size;
@@ -141,7 +157,13 @@ start_process (void *proc_cmd_)
 
   // printf("STACK SET. ESP: %p\n", if_.esp);
   // hex_dump((uintptr_t)if_.esp, if_.esp, 100, true);
-     
+
+  lock_acquire(&filesys_lock);
+  struct file *f = filesys_open(proc_name);
+  file_deny_write(f);
+  lock_release(&filesys_lock);
+  thread_current()->exec_file = f;
+
   palloc_free_page(proc_cmd);
   palloc_free_page(proc_cmd_copy);
 
@@ -172,59 +194,30 @@ process_wait (tid_t child_tid)
 {
   struct thread *t_cur = thread_current();
   
-  // struct child_entry tmp;
-  // tmp.tid = child_tid;
-  // struct hash_elem *e = hash_find(&t_cur->child_map, &tmp.elem);
-
-  // if (e != NULL) {
-  //   struct child_entry *entry = hash_entry(e, struct child_entry, elem);
-  //   if (!entry->is_waiting) {
-  //     entry->is_waiting = 1;
-  //     sema_down(&entry->wait_sema); // wait for child process to exit
-  //     entry->is_waiting = 0;
-  //     printf("CHILD %s COMPLETE\n", entry->t->name);
-  //     return entry->exit_code;
-  //   }
-  //   else { // already waiting on child
-  //     return -1;
-  //   }
-  // } else {
-  //   printf("TID %d is not child of %s\n", child_tid, t_cur->name);
-  //   return -1;
-  // }
   struct list_elem *e;
   for (e = list_begin (&t_cur->child_list); e != list_end (&t_cur->child_list);
        e = list_next (e))
   {
     struct child_entry *entry = list_entry(e, struct child_entry, elem);
     if (entry->tid == child_tid) {
-      if (!entry->is_waiting && entry->is_alive) {
-        entry->is_waiting = true;
+      // printf("FIND %d %p %d %d\n", child_tid, entry->t, entry->is_waiting_on, entry->is_alive);
+      if (!entry->is_waiting_on && entry->is_alive) {
+        entry->is_waiting_on = true;
+        // printf("START WAIT ON %d\n", child_tid);
         sema_down(&entry->wait_sema); // wait for child process to exit
-        entry->is_waiting = false;
-        // printf("CHILD %s COMPLETE\n", entry->t->name);
         return entry->exit_code;
       }
-      else { // already waiting on child or child has terminated
+      else if (entry->is_waiting_on) { // already waiting on child
+        // printf("WAITING ON %d\n", child_tid);
         return -1;
+      }
+      else { // child has terminated, retrieve exit_code
+        // printf("TERMINATED\n");
+        return entry->exit_code;
       }
     }
   }
   // child_tid is not a child of current process
-  return -1;
-  
-  while (1)
-  {
-    thread_yield();
-    // struct thread *child = get_thread_by_tid(child_tid);
-    // if (child == NULL) printf("CHILD DEAD\n");
-    // else printf("CHILD %s STAT: %d\n", child->name, child->status);
-    if (thread_dead(child_tid)) break;
-    // if (thread_ready_count() == 0) {
-    //   printf("BREAK\n");
-    //   break;
-    // }
-  }
   return -1;
 }
 
@@ -232,15 +225,19 @@ process_wait (tid_t child_tid)
 void
 process_exit (void)
 {
-  struct thread *cur = thread_current ();
+  struct thread *t_cur = thread_current ();
+  printf("%s: exit(%d)\n", t_cur->name, t_cur->exit_code);
 
-  printf("%s: exit(%d)\n", cur->name, cur->exit_code);
+  // close the executable file
+  lock_acquire(&filesys_lock);
+  file_close(t_cur->exec_file);
+  lock_release(&filesys_lock);
 
   uint32_t *pd;
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pagedir;
+  pd = t_cur->pagedir;
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
@@ -250,7 +247,7 @@ process_exit (void)
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-      cur->pagedir = NULL;
+      t_cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
