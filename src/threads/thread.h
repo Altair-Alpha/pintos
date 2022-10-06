@@ -115,7 +115,6 @@ struct thread
 #endif
 
   struct thread *parent;              /**< Thread's parent. */
-  // struct list child_map;             /**< Thread's children (key=tid, value=child_entry). */
   struct list child_list;             /**< Thread's children. Member type is child_entry. */
   struct child_entry *as_child;       /**< Thread itself's child_entry. This will be added 
                                            to its parent's child_list and is heap-allocated 
@@ -142,7 +141,7 @@ struct child_entry
   struct thread *t;                   /**< Pointer to child thread. */
   bool is_alive;                      /**< Whether the child is still running. */
   int exit_code;                      /**< Child's exit code. */
-  bool is_waiting_on;                    /**< Whether the parent is waiting on the child. */
+  bool is_waiting_on;                 /**< Whether the parent is waiting on the child. */
   struct semaphore wait_sema;         /**< Semaphore to let parent wait on the child. */
   struct list_elem elem;
 };

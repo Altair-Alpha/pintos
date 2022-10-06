@@ -50,13 +50,7 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f) 
 {
-  // printf("CHECK SYSCALL\n");
-  // if (!check_read_user_ptr(f->esp, sizeof(int))) {
-  //   // printf("INVALID SYSCALL\n");
-  //   terminate_process();
-  // }
-
-  int syscall_type = *(int *)check_read_user_ptr(f->esp, sizeof(int));//f->esp;
+  int syscall_type = *(int *)check_read_user_ptr(f->esp, sizeof(int));
   // printf ("system call! TYPE: %d\n", syscall_type);
   switch (syscall_type)
   {
@@ -114,12 +108,7 @@ syscall_halt(struct intr_frame *f UNUSED)
 static void 
 syscall_exit(struct intr_frame *f)
 {
-  // exit_code is passed as ARG0, after syscall number
-  // if (!check_read_user_ptr(f->esp + ptr_size, sizeof(int))) {
-  //   terminate_process();
-  // }
   int exit_code = *(int *)check_read_user_ptr(f->esp + ptr_size, sizeof(int));
-  // printf("EXIT CODE: %d\n", exit_code);
   thread_current()->exit_code = exit_code;
   thread_exit();
 }
@@ -129,7 +118,6 @@ syscall_exec(struct intr_frame *f)
 {
   char *cmd = *(char **)check_read_user_ptr(f->esp + ptr_size, ptr_size);
   check_read_user_str(cmd);
-  // printf("EXEC %s\n", cmd);
   f->eax = process_execute(cmd);
 }
 
@@ -169,7 +157,7 @@ syscall_open(struct intr_frame *f)
 {
   char *file_name = *(char **)check_read_user_ptr(f->esp + ptr_size, ptr_size);
   check_read_user_str(file_name);
-  // printf("OPEN -%s-\n", file_name);
+  
   lock_acquire(&filesys_lock);
   struct file *opened_file = filesys_open(file_name);
   lock_release(&filesys_lock);
@@ -235,7 +223,6 @@ syscall_read(struct intr_frame *f)
 static void 
 syscall_write(struct intr_frame *f)
 {
-  // printf("%s WRITE CALL\n", thread_current()->name);
   int fd = *(int *)check_read_user_ptr(f->esp + ptr_size, sizeof(int));
   void *buf = *(void **)check_read_user_ptr(f->esp + 2 * ptr_size, ptr_size);
   unsigned size = *(int *)check_read_user_ptr(f->esp + 3 * ptr_size, sizeof(unsigned));
@@ -310,8 +297,7 @@ check_read_user_ptr(const void *ptr, size_t size)
   if (!is_user_vaddr(ptr)) {
     terminate_process();
   }
-  for (size_t i = 0; i < size; i++) {
-    // printf("CHECK %p\n", ptr+i);
+  for (size_t i = 0; i < size; i++) { // check if every byte is safe to read
     if (get_user(ptr + i) == -1) {
       terminate_process();
     }
@@ -324,7 +310,7 @@ check_read_user_ptr(const void *ptr, size_t size)
 static void * 
 check_write_user_ptr(void *ptr, size_t size)
 {
-  if (!is_user_vaddr(ptr)) {
+  if (!is_user_vaddr(ptr)) { // check if every byte is safe to write
     terminate_process();
   }
   for (size_t i = 0; i < size; i++) {

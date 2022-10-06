@@ -55,11 +55,10 @@ process_execute (const char *proc_cmd)
   }
 
   sema_down(&thread_current()->sema_exec);
-
   if (!thread_current()->exec_success) {
     return -1;
   }
-  thread_current()->exec_success = false; // reset the flag
+  thread_current()->exec_success = false; // reset the flag for next spawn
 
   return tid;
 }
@@ -73,14 +72,6 @@ start_process (void *proc_cmd_)
   // we can modify proc_cmd since we've passed a copy from process_execute
   // but again we need another copy: one for file name, one for arguments (including file name)
   char *proc_cmd_copy = palloc_get_page(0);
-  // if (proc_cmd_copy == NULL) {
-  //   palloc_free_page(proc_cmd);
-  //   thread_current()->as_child->is_alive = false;
-  //   thread_current()->exit_code = -1;
-  //   sema_up(&thread_current()->parent->sema_exec);
-  //   thread_exit ();
-  // }
-
   strlcpy(proc_cmd_copy, proc_cmd, PGSIZE);
 
   struct intr_frame if_;
@@ -200,25 +191,20 @@ process_wait (tid_t child_tid)
   {
     struct child_entry *entry = list_entry(e, struct child_entry, elem);
     if (entry->tid == child_tid) {
-      // printf("FIND %d %p %d %d\n", child_tid, entry->t, entry->is_waiting_on, entry->is_alive);
       if (!entry->is_waiting_on && entry->is_alive) {
         entry->is_waiting_on = true;
-        // printf("START WAIT ON %d\n", child_tid);
         sema_down(&entry->wait_sema); // wait for child process to exit
         return entry->exit_code;
       }
       else if (entry->is_waiting_on) { // already waiting on child
-        // printf("WAITING ON %d\n", child_tid);
         return -1;
       }
       else { // child has terminated, retrieve exit_code
-        // printf("TERMINATED\n");
         return entry->exit_code;
       }
     }
   }
-  // child_tid is not a child of current process
-  return -1;
+  return -1; // child_tid is not a child of current process
 }
 
 /** Free the current process's resources. */
