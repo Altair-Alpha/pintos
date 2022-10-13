@@ -1,3 +1,12 @@
+## :white_check_mark: About this repo
+
+This is my implementation of PKU's Operating System course lab (adapted from the original well-known Pintos). Project documentation at: [PintosBook](https://alfredthiel.gitbook.io/pintosbook/).
+Updated to lab 2 (User Programs). My blog on this lab is available at [CSDN](https://blog.csdn.net/altair_alpha/category_12006373.html).
+
+DO NOT USE FOR YOUR HOMEWORK IF YOU ARE TAKING THE COURSE.
+
+==========Contents below are from the original README.==========
+
 # Pintos
 This repo contains skeleton code for undergraduate Operating System course honor track at Peking University. 
 
